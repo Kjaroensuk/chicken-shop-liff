@@ -4,8 +4,12 @@ import {
   ChevronRight, Settings, Plus, Trash2, Edit2, X, Save, CreditCard, Loader, QrCode, Smartphone, MapPin, Phone, Clock 
 } from 'lucide-react';
 
+// หมายเหตุ: เราลบ import liff ออกและจะใช้ window.liff จาก CDN แทนเพื่อแก้ปัญหาการคอมไพล์
+// import liff from '@line/liff'; 
+
 // --- CONFIGURATION ---
 const OMISE_PUBLIC_KEY = 'pkey_test_5w885d5s77864808'; 
+const MY_LIFF_ID = '2008579350-zOxlbkRy'; // LIFF ID ของคุณ
 
 // ข้อมูลเริ่มต้น
 const INITIAL_MENU = [
@@ -52,6 +56,8 @@ export default function App() {
   
   // State สำหรับ User Profile (LINE)
   const [userProfile, setUserProfile] = useState(null);
+  const [liffError, setLiffError] = useState(null);
+  const [liffReady, setLiffReady] = useState(false);
 
   // State สำหรับโหมด Admin
   const [isAdminMode, setIsAdminMode] = useState(false);
@@ -85,17 +91,29 @@ export default function App() {
   // รายการที่อยู่เก่าที่บันทึกไว้
   const [savedAddresses, setSavedAddresses] = useState([]);
 
-  // Mock Login & Init
+  // Initialization Effect
   useEffect(() => {
-    // 1. จำลองการ Login ผ่าน LINE LIFF
-    // ในโค้ดจริงจะเป็น: await liff.init(...); const profile = await liff.getProfile();
-    setTimeout(() => {
-        setUserProfile({
-            displayName: 'คุณสมชาย', // ชื่อที่ได้จาก LINE
-            pictureUrl: 'https://images.unsplash.com/photo-1599566150163-29194dcaad36?ixlib=rb-4.0.3&auto=format&fit=crop&w=100&q=80', // รูปโปรไฟล์
-            userId: 'U123456789'
-        });
-    }, 1500); // สมมติว่าโหลด 1.5 วินาที
+    // 1. โหลด LIFF SDK via CDN (เพื่อให้ทำงานได้โดยไม่ต้อง npm install @line/liff ในบาง environment)
+    const initLiffSDK = () => {
+        const script = document.createElement('script');
+        script.src = 'https://static.line-scdn.net/liff/edge/2/sdk.js';
+        script.onload = async () => {
+            try {
+                // ใช้ window.liff แทน
+                await window.liff.init({ liffId: MY_LIFF_ID });
+                setLiffReady(true);
+                if (window.liff.isLoggedIn()) {
+                    const profile = await window.liff.getProfile();
+                    setUserProfile(profile);
+                }
+            } catch (error) {
+                console.error('LIFF Init Failed:', error);
+                setLiffError(error.toString());
+            }
+        };
+        document.body.appendChild(script);
+    };
+    initLiffSDK();
 
     // 2. โหลดที่อยู่เดิม
     const saved = localStorage.getItem('chickenShop_savedAddresses');
@@ -104,10 +122,10 @@ export default function App() {
     }
 
     // 3. โหลด Omise
-    const script = document.createElement('script');
-    script.src = 'https://cdn.omise.co/omise.js';
-    script.async = true;
-    script.onload = () => {
+    const scriptOmise = document.createElement('script');
+    scriptOmise.src = 'https://cdn.omise.co/omise.js';
+    scriptOmise.async = true;
+    scriptOmise.onload = () => {
       setOmiseLoaded(true);
       if (window.OmiseCard) {
         window.OmiseCard.configure({
@@ -119,14 +137,18 @@ export default function App() {
         });
       }
     };
-    document.body.appendChild(script);
+    document.body.appendChild(scriptOmise);
 
     return () => {
-      if(document.body.contains(script)) {
-        document.body.removeChild(script);
-      }
+      // Cleanup scripts if needed (optional)
     }
   }, []);
+
+  const handleLogin = () => {
+    if (window.liff) {
+        window.liff.login();
+    }
+  };
 
   // --- Functions สำหรับจัดการเมนู (Admin) ---
 
@@ -185,8 +207,6 @@ export default function App() {
     if (cart.length === 0) return;
     
     // Auto-fill Logic:
-    // 1. ถ้ามีที่อยู่เก่า ใช้ที่อยู่เก่า
-    // 2. ถ้าไม่มี แต่มี LINE Profile ให้ดึงชื่อจาก LINE มาใส่ก่อน
     if (savedAddresses.length > 0) {
       setCustomerInfo(savedAddresses[0]);
     } else if (userProfile) {
@@ -206,10 +226,10 @@ export default function App() {
   const handleCustomerFormSubmit = (e) => {
     e.preventDefault();
     
-    // Logic การบันทึกที่อยู่: เอาตัวใหม่ไว้บนสุด, ตัดตัวซ้ำออก, เก็บแค่ 3 อันล่าสุด
+    // Logic การบันทึกที่อยู่
     const newAddress = customerInfo;
     let updatedAddresses = [newAddress, ...savedAddresses.filter(a => a.address !== newAddress.address)];
-    updatedAddresses = updatedAddresses.slice(0, 3); // Keep only recent 3
+    updatedAddresses = updatedAddresses.slice(0, 3); 
     
     setSavedAddresses(updatedAddresses);
     localStorage.setItem('chickenShop_savedAddresses', JSON.stringify(updatedAddresses));
@@ -237,6 +257,16 @@ export default function App() {
         console.log("Omise Token:", nonce);
         console.log("Customer Info:", customerInfo); 
         
+        // ส่งข้อความกลับเข้า LINE
+        if (window.liff && window.liff.isInClient()) {
+            window.liff.sendMessages([
+                {
+                    type: 'text',
+                    text: `สั่งซื้อสำเร็จ!\nเมนู: ${cart.map(i => i.name).join(', ')}\nรวม: ${calculateTotal()} บาท`
+                }
+            ]).catch(err => console.error("Error sending message", err));
+        }
+
         setTimeout(() => {
           alert(
             `✅ สั่งซื้อสำเร็จ!\n\n` +
@@ -307,6 +337,18 @@ export default function App() {
         </div>
       )}
 
+      {/* LIFF Error / Login Prompt */}
+      {!userProfile && !isAdminMode && liffReady && (
+        <div className="bg-blue-50 p-4 mx-4 mt-4 rounded-xl border border-blue-100 flex justify-between items-center">
+             <div className="text-sm text-blue-800">
+                {liffError ? `Error: ${liffError}` : 'เข้าสู่ระบบเพื่อสะสมแต้ม'}
+             </div>
+             <button onClick={handleLogin} className="bg-blue-600 text-white text-xs px-3 py-1.5 rounded-lg font-bold">
+                Login with LINE
+             </button>
+        </div>
+      )}
+
       <main className="max-w-md mx-auto p-4 space-y-6">
         
         {/* Points Card (Show only for Customer) */}
@@ -317,7 +359,7 @@ export default function App() {
             
             <div className="relative z-10">
               
-              {/* Profile Header in Card (NEW!) */}
+              {/* Profile Header in Card */}
               <div className="flex items-center gap-3 mb-4 animate-in fade-in slide-in-from-left-4 duration-700">
                 <div className="w-12 h-12 rounded-full border-2 border-white/40 overflow-hidden shadow-inner bg-white/10">
                     {userProfile?.pictureUrl ? (
@@ -329,7 +371,7 @@ export default function App() {
                 <div>
                     <p className="text-green-100 text-[10px] font-medium uppercase tracking-wider">Welcome Member</p>
                     <h3 className="font-bold text-lg text-white leading-tight">
-                        {userProfile ? userProfile.displayName : 'กำลังโหลดข้อมูล...'}
+                        {userProfile ? userProfile.displayName : 'Guest'}
                     </h3>
                 </div>
               </div>
