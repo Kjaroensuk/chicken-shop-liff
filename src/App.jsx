@@ -4,42 +4,38 @@ import {
   ChevronRight, Settings, Plus, Trash2, Edit2, X, Save, CreditCard, Loader, QrCode, Smartphone, MapPin, Phone, Clock 
 } from 'lucide-react';
 
-// หมายเหตุ: เราลบ import liff ออกและจะใช้ window.liff จาก CDN แทนเพื่อแก้ปัญหาการคอมไพล์
-// import liff from '@line/liff'; 
+// --- FIREBASE IMPORTS ---
+// เราใช้ global variables ที่ Canvas เตรียมไว้ให้สำหรับการเชื่อมต่อ Firebase
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
+import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc, getDoc } from 'firebase/firestore';
 
 // --- CONFIGURATION ---
 const OMISE_PUBLIC_KEY = 'pkey_test_5w885d5s77864808'; 
 const MY_LIFF_ID = '2008579350-zOxlbkRy'; // LIFF ID ของคุณ
 
-// ข้อมูลเริ่มต้น
+// ข้อมูลเริ่มต้น (ใช้สำหรับสร้างเมนูครั้งแรก หากฐานข้อมูลว่างเปล่า)
 const INITIAL_MENU = [
   {
-    id: 1,
+    id: 'pop',
     name: 'ไก่ป๊อป',
     price: 39,
     imageUrl: 'https://images.unsplash.com/photo-1626082927389-6cd097cdc6ec?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=300&q=80',
     description: 'กรอบนอก นุ่มใน'
   },
   {
-    id: 2,
+    id: 'nugget',
     name: 'นักเก็ต',
     price: 49,
     imageUrl: 'https://images.unsplash.com/photo-1563805042-7684c019e1cb?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=300&q=80',
     description: 'เนื้อแน่น เต็มคำ'
   },
   {
-    id: 3,
+    id: 'spicy',
     name: 'ไก่ทอดสไปซี่',
     price: 45,
     imageUrl: 'https://images.unsplash.com/photo-1606843046080-45bf7a23c39f?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=300&q=80',
     description: 'เผ็ดจัดจ้าน'
-  },
-  {
-    id: 4,
-    name: 'เฟรนช์ฟรายส์',
-    price: 29,
-    imageUrl: 'https://images.unsplash.com/photo-1630384060421-cb20d0e0649d?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=300&q=80',
-    description: 'ทอดใหม่ทุกออเดอร์'
   }
 ];
 
@@ -48,16 +44,36 @@ const ORDER_HISTORY = [
   { id: 'ORD-002', date: '25 พ.ย. 66', items: 'นักเก็ต x 1', total: 49 },
 ];
 
+
+// --- FIREBASE INITIALIZATION (Outside Component for Singleton) ---
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+
+let db = null;
+let auth = null;
+
+try {
+    const app = initializeApp(firebaseConfig);
+    db = getFirestore(app);
+    auth = getAuth(app);
+} catch (error) {
+    console.error("Firebase Initialization Error:", error);
+}
+
+const getMenuCollectionRef = () => collection(db, `artifacts/${appId}/public/data/menu_items`);
+
+
 export default function App() {
   // State หลัก
   const [points, setPoints] = useState(320);
+  const [menuItems, setMenuItems] = useState([]); // เริ่มต้นด้วยเมนูว่าง รอโหลดจาก Firestore
   const [cart, setCart] = useState([]);
-  const [menuItems, setMenuItems] = useState(INITIAL_MENU);
   
   // State สำหรับ User Profile (LINE)
   const [userProfile, setUserProfile] = useState(null);
   const [liffError, setLiffError] = useState(null);
   const [liffReady, setLiffReady] = useState(false);
+  const [dbReady, setDbReady] = useState(false); // สถานะความพร้อมของ DB
 
   // State สำหรับโหมด Admin
   const [isAdminMode, setIsAdminMode] = useState(false);
@@ -67,7 +83,6 @@ export default function App() {
   // State สำหรับ Flow การสั่งซื้อ
   const [isCustomerFormOpen, setIsCustomerFormOpen] = useState(false);
   const [isPaymentSelectionOpen, setIsPaymentSelectionOpen] = useState(false);
-  
   const [editingItem, setEditingItem] = useState(null); 
   
   // State สำหรับ Omise
@@ -88,47 +103,84 @@ export default function App() {
     address: ''
   });
 
-  // รายการที่อยู่เก่าที่บันทึกไว้
+  // รายการที่อยู่เก่าที่บันทึกไว้ (ยังใช้ Local Storage)
   const [savedAddresses, setSavedAddresses] = useState([]);
 
-  // Initialization Effect
+
+  // ** EFFECT 1: Firebase Auth & Firestore Listener **
   useEffect(() => {
-    // 1. โหลด LIFF SDK via CDN (เพื่อให้ทำงานได้โดยไม่ต้อง npm install @line/liff ในบาง environment)
+    if (!db || !auth) return;
+
+    // 1. Firebase Authentication
+    const signIn = async () => {
+        try {
+            if (typeof __initial_auth_token !== 'undefined') { 
+                await signInWithCustomToken(auth, __initial_auth_token);
+            } else { 
+                await signInAnonymously(auth);
+            }
+            setDbReady(true);
+            console.log("Firebase Auth Ready. User ID:", auth.currentUser?.uid);
+        } catch (error) {
+            console.error("Firebase Sign-in Failed:", error);
+        }
+    };
+    signIn();
+
+    // 2. Real-time Menu Listener (onSnapshot)
+    const unsubscribe = onSnapshot(getMenuCollectionRef(), async (snapshot) => {
+        if (snapshot.empty) {
+            // ถ้าฐานข้อมูลว่าง ให้ลองเพิ่มเมนูเริ่มต้นเข้าไป
+            if (dbReady) {
+                console.log("DB is empty. Seeding initial menu...");
+                await Promise.all(INITIAL_MENU.map(item => 
+                    setDoc(doc(db, `artifacts/${appId}/public/data/menu_items`, item.id), item)
+                ));
+            }
+        } else {
+            const fetchedMenu = snapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data()
+            }));
+            setMenuItems(fetchedMenu);
+        }
+    }, (error) => {
+        console.error("Firestore Listener Failed:", error);
+    });
+
+    return () => unsubscribe(); // Cleanup listener on unmount
+  }, [dbReady]); // รอจนกว่า dbReady จะเป็น true ถึงเริ่ม Listener
+
+
+  // ** EFFECT 2: LIFF, Omise, และ Address Load **
+  useEffect(() => {
+    // 1. โหลด LIFF SDK via CDN
     const initLiffSDK = () => {
         const script = document.createElement('script');
         script.src = 'https://static.line-scdn.net/liff/edge/2/sdk.js';
         script.onload = async () => {
             try {
-                // ใช้ window.liff แทน
                 await window.liff.init({ liffId: MY_LIFF_ID });
                 setLiffReady(true);
                 
-                // ตรวจสอบสถานะการล็อกอิน
                 if (window.liff.isLoggedIn()) {
-                    // API Call: liff.getProfile() จะรวม displayName, pictureUrl, userId
-                    // API Call: liff.getDecodedIDToken() จะรวม email (ถ้าขอสิทธิ์ไว้)
                     const profile = await window.liff.getProfile();
-                    
                     let email = null;
                     if (window.liff.getDecodedIDToken()) {
                         email = window.liff.getDecodedIDToken().email;
                     }
-
                     setUserProfile({ ...profile, email });
-                } else {
-                    // ไม่ต้องเรียก liff.login() อัตโนมัติ เพราะจะไปแสดงปุ่มให้ลูกค้ากดเอง
                 }
             } catch (error) {
                 console.error('LIFF Init Failed:', error);
-                // แสดงข้อความ error ที่ชัดเจนขึ้น
-                setLiffError(`LIFF Initialization Error: ${error.message || error.toString()}. Please check your LIFF ID and Scopes in LINE Console.`);
+                setLiffError(`LIFF Error: ${error.message || error.toString()}.`);
             }
         };
         document.body.appendChild(script);
     };
     initLiffSDK();
 
-    // 2. โหลดที่อยู่เดิม
+    // 2. โหลดที่อยู่เดิม (จาก Local Storage)
     const saved = localStorage.getItem('chickenShop_savedAddresses');
     if (saved) {
       setSavedAddresses(JSON.parse(saved));
@@ -152,9 +204,7 @@ export default function App() {
     };
     document.body.appendChild(scriptOmise);
 
-    return () => {
-      // Cleanup scripts if needed (optional)
-    }
+    return () => { /* Cleanup */ }
   }, []);
 
   const handleLogin = () => {
@@ -177,30 +227,40 @@ export default function App() {
     setIsModalOpen(true);
   };
 
-  const handleDeleteClick = (id) => {
+  const handleDeleteClick = async (id) => {
     if (window.confirm('คุณแน่ใจหรือไม่ที่จะลบเมนูนี้?')) {
-      setMenuItems(menuItems.filter(item => item.id !== id));
+      try {
+        await deleteDoc(doc(db, `artifacts/${appId}/public/data/menu_items`, id));
+      } catch (e) {
+        console.error("Error deleting document: ", e);
+        alert("ไม่สามารถลบรายการได้ กรุณาตรวจสอบการเชื่อมต่อ");
+      }
     }
   };
 
-  const handleSaveItem = (e) => {
+  const handleSaveItem = async (e) => {
     e.preventDefault();
-    if (editingItem) {
-      setMenuItems(menuItems.map(item => 
-        item.id === editingItem.id ? { ...formData, id: item.id, price: Number(formData.price) } : item
-      ));
-    } else {
-      const newItem = {
+    if (!db) return;
+
+    const itemId = editingItem ? editingItem.id : crypto.randomUUID(); // ใช้ ID เดิมถ้าแก้ไข, ถ้าเพิ่มใหม่ใช้ UUID
+    
+    const itemData = {
         ...formData,
-        id: Date.now(),
-        price: Number(formData.price)
-      };
-      setMenuItems([...menuItems, newItem]);
+        id: itemId,
+        price: Number(formData.price),
+        updatedAt: new Date().toISOString()
+    };
+
+    try {
+        await setDoc(doc(db, `artifacts/${appId}/public/data/menu_items`, itemId), itemData);
+        setIsModalOpen(false);
+    } catch (e) {
+        console.error("Error adding/updating document: ", e);
+        alert("ไม่สามารถบันทึกเมนูได้ กรุณาลองใหม่อีกครั้ง");
     }
-    setIsModalOpen(false);
   };
 
-  // --- Functions สำหรับตะกร้าสินค้า ---
+  // --- Functions สำหรับตะกร้าสินค้า (เดิม) ---
 
   const addToCart = (item) => {
     if (isAdminMode) return;
@@ -226,8 +286,8 @@ export default function App() {
       setCustomerInfo(prev => ({ ...prev, name: userProfile.displayName }));
     }
 
-    setIsCartOpen(false); // ปิดตะกร้า
-    setIsCustomerFormOpen(true); // เปิดหน้ากรอกข้อมูล
+    setIsCartOpen(false); 
+    setIsCustomerFormOpen(true); 
   };
 
   // ฟังก์ชันเลือกใช้ที่อยู่เก่า
@@ -239,7 +299,6 @@ export default function App() {
   const handleCustomerFormSubmit = (e) => {
     e.preventDefault();
     
-    // Logic การบันทึกที่อยู่
     const newAddress = customerInfo;
     let updatedAddresses = [newAddress, ...savedAddresses.filter(a => a.address !== newAddress.address)];
     updatedAddresses = updatedAddresses.slice(0, 3); 
@@ -270,7 +329,6 @@ export default function App() {
         console.log("Omise Token:", nonce);
         console.log("Customer Info:", customerInfo); 
         
-        // ส่งข้อความกลับเข้า LINE
         if (window.liff && window.liff.isInClient()) {
             window.liff.sendMessages([
                 {
@@ -289,7 +347,7 @@ export default function App() {
             `Ref Payment: ${nonce.substring(0, 10)}...`
           );
           setCart([]);
-          setCustomerInfo({ name: '', phone: '', address: '' }); // Reset Form
+          setCustomerInfo({ name: '', phone: '', address: '' }); 
         }, 1000);
       },
       onFormClosed: () => {
@@ -365,10 +423,10 @@ export default function App() {
         </div>
       )}
       
-      {/* Loading State for LIFF (ตอนที่รอโหลด SDK) */}
-      {!liffReady && (
+      {/* Loading State for DB/LIFF */}
+      {(!liffReady || !dbReady) && (
         <div className="p-4 mx-4 mt-4 text-center text-gray-500 flex items-center justify-center gap-2">
-          <Loader className="w-5 h-5 animate-spin" /> กำลังโหลดระบบ LIFF...
+          <Loader className="w-5 h-5 animate-spin" /> กำลังโหลดระบบ {dbReady ? 'LIFF' : 'ฐานข้อมูล'}...
         </div>
       )}
 
@@ -396,7 +454,6 @@ export default function App() {
                     <h3 className="font-bold text-lg text-white leading-tight">
                         {userProfile ? userProfile.displayName : 'Guest'}
                     </h3>
-                    {/* เพิ่ม Email ตรงนี้เพื่อยืนยันว่าดึงข้อมูลได้ */}
                     {userProfile?.email && (
                          <p className="text-xs text-white/80 opacity-90 truncate">Email: {userProfile.email}</p>
                     )}
@@ -441,46 +498,54 @@ export default function App() {
               </button>
             )}
 
-            {menuItems.map((item) => (
-              <div key={item.id} className="relative group">
-                <div 
-                  onClick={() => !isAdminMode && addToCart(item)}
-                  className={`bg-gray-50 rounded-xl p-4 flex flex-col items-center justify-center h-full border border-transparent transition-all duration-200 
-                    ${isAdminMode ? '' : 'hover:bg-green-50 hover:border-green-200 cursor-pointer active:scale-95'}`}
-                >
-                  <img 
-                    src={item.imageUrl} 
-                    alt={item.name} 
-                    className="w-32 h-32 object-cover rounded-lg mb-3 shadow-sm transition-transform duration-300 group-hover:scale-110"
-                  />
-                  <h3 className="font-bold text-gray-800 text-center line-clamp-1">{item.name}</h3>
-                  <p className="text-green-600 font-bold text-sm">{item.price} ฿</p>
-                  
-                  {isAdminMode && (
-                    <div className="absolute inset-0 bg-white/80 backdrop-blur-[1px] rounded-xl flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button 
-                        onClick={(e) => { e.stopPropagation(); handleEditClick(item); }}
-                        className="p-2 bg-blue-500 text-white rounded-full hover:bg-blue-600 shadow-md transform hover:scale-110 transition-all"
-                      >
-                        <Edit2 className="w-4 h-4" />
-                      </button>
-                      <button 
-                        onClick={(e) => { e.stopPropagation(); handleDeleteClick(item.id); }}
-                        className="p-2 bg-red-500 text-white rounded-full hover:bg-red-600 shadow-md transform hover:scale-110 transition-all"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  )}
+            {menuItems.length === 0 && dbReady ? (
+                <div className="col-span-2 text-center text-gray-400 py-10">
+                    {!isAdminMode ? 'ไม่มีเมนูในร้านค้า' : 'ไม่มีเมนู! กรุณาเพิ่มรายการแรก'}
                 </div>
-              </div>
-            ))}
+            ) : (
+              menuItems.map((item) => (
+                <div key={item.id} className="relative group">
+                  <div 
+                    onClick={() => !isAdminMode && addToCart(item)}
+                    className={`bg-gray-50 rounded-xl p-4 flex flex-col items-center justify-center h-full border border-transparent transition-all duration-200 
+                      ${isAdminMode ? '' : 'hover:bg-green-50 hover:border-green-200 cursor-pointer active:scale-95'}`}
+                  >
+                    <img 
+                      src={item.imageUrl} 
+                      alt={item.name} 
+                      className="w-32 h-32 object-cover rounded-lg mb-3 shadow-sm transition-transform duration-300 group-hover:scale-110"
+                    />
+                    <h3 className="font-bold text-gray-800 text-center line-clamp-1">{item.name}</h3>
+                    <p className="text-green-600 font-bold text-sm">{item.price} ฿</p>
+                    
+                    {isAdminMode && (
+                      <div className="absolute inset-0 bg-white/80 backdrop-blur-[1px] rounded-xl flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button 
+                          onClick={(e) => { e.stopPropagation(); handleEditClick(item); }}
+                          className="p-2 bg-blue-500 text-white rounded-full hover:bg-blue-600 shadow-md transform hover:scale-110 transition-all"
+                        >
+                          <Edit2 className="w-4 h-4" />
+                        </button>
+                        <button 
+                          onClick={(e) => { e.stopPropagation(); handleDeleteClick(item.id); }}
+                          className="p-2 bg-red-500 text-white rounded-full hover:bg-red-600 shadow-md transform hover:scale-110 transition-all"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))
+            )}
           </div>
 
           {!isAdminMode && (
             <button 
               onClick={() => setIsCartOpen(true)}
-              className="w-full mt-4 bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-xl shadow-md transition-colors flex items-center justify-center gap-2 active:scale-95 transform duration-150"
+              disabled={menuItems.length === 0}
+              className={`w-full mt-4 text-white font-bold py-3 px-4 rounded-xl shadow-md transition-colors flex items-center justify-center gap-2 active:scale-95 transform duration-150
+                ${menuItems.length > 0 ? 'bg-green-600 hover:bg-green-700' : 'bg-gray-400 cursor-not-allowed'}`}
             >
               <ShoppingCart className="w-5 h-5" />
               ไปที่ตะกร้า ({cart.reduce((sum, item) => sum + item.price, 0)} ฿)
