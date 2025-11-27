@@ -129,13 +129,19 @@ export default function App() {
 
     // 2. Real-time Menu Listener (onSnapshot)
     const unsubscribe = onSnapshot(getMenuCollectionRef(), async (snapshot) => {
-        if (snapshot.empty) {
-            // ถ้าฐานข้อมูลว่าง ให้ลองเพิ่มเมนูเริ่มต้นเข้าไป
-            if (dbReady) {
-                console.log("DB is empty. Seeding initial menu...");
-                await Promise.all(INITIAL_MENU.map(item => 
-                    setDoc(doc(db, `artifacts/${appId}/public/data/menu_items`, item.id), item)
-                ));
+        if (snapshot.empty && dbReady) {
+            // ตรวจสอบสถานะ DBReady อีกครั้งเพื่อป้องกันการ Seed ข้อมูลที่ไม่จำเป็น
+            console.log("DB is empty. Attempting to seed initial menu...");
+            
+            // ใช้ getDoc เพื่อตรวจสอบว่ามีตัวอย่างแรกอยู่หรือไม่ ก่อน Seed ทั้งหมด
+            const firstDocRef = doc(db, `artifacts/${appId}/public/data/menu_items`, INITIAL_MENU[0].id);
+            const firstDocSnap = await getDoc(firstDocRef);
+            
+            if (!firstDocSnap.exists()) {
+                 console.log("Seeding initial menu...");
+                 await Promise.all(INITIAL_MENU.map(item => 
+                     setDoc(doc(db, `artifacts/${appId}/public/data/menu_items`, item.id), item)
+                 ));
             }
         } else {
             const fetchedMenu = snapshot.docs.map(doc => ({
@@ -244,10 +250,17 @@ export default function App() {
 
     const itemId = editingItem ? editingItem.id : crypto.randomUUID(); // ใช้ ID เดิมถ้าแก้ไข, ถ้าเพิ่มใหม่ใช้ UUID
     
+    // ตรวจสอบและแปลงราคาเป็นตัวเลขก่อนบันทึก
+    const priceAsNumber = Number(formData.price);
+    if (isNaN(priceAsNumber)) {
+        alert("ราคาไม่ถูกต้อง กรุณาใส่ตัวเลข");
+        return;
+    }
+
     const itemData = {
         ...formData,
         id: itemId,
-        price: Number(formData.price),
+        price: priceAsNumber, // ใช้ค่าที่ถูกแปลงแล้ว
         updatedAt: new Date().toISOString()
     };
 
@@ -878,7 +891,8 @@ export default function App() {
                     type="number" 
                     required
                     min="0"
-                    value={formData.price}
+                    // ใช้ toString() เพื่อป้องกันปัญหา warning จากการผูก input กับ state ที่เป็น number
+                    value={formData.price.toString()} 
                     onChange={(e) => setFormData({...formData, price: e.target.value})}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 transition-all"
                     placeholder="0"
