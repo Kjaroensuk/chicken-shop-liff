@@ -102,13 +102,26 @@ export default function App() {
                 // ใช้ window.liff แทน
                 await window.liff.init({ liffId: MY_LIFF_ID });
                 setLiffReady(true);
+                
+                // ตรวจสอบสถานะการล็อกอิน
                 if (window.liff.isLoggedIn()) {
+                    // API Call: liff.getProfile() จะรวม displayName, pictureUrl, userId
+                    // API Call: liff.getDecodedIDToken() จะรวม email (ถ้าขอสิทธิ์ไว้)
                     const profile = await window.liff.getProfile();
-                    setUserProfile(profile);
+                    
+                    let email = null;
+                    if (window.liff.getDecodedIDToken()) {
+                        email = window.liff.getDecodedIDToken().email;
+                    }
+
+                    setUserProfile({ ...profile, email });
+                } else {
+                    // ไม่ต้องเรียก liff.login() อัตโนมัติ เพราะจะไปแสดงปุ่มให้ลูกค้ากดเอง
                 }
             } catch (error) {
                 console.error('LIFF Init Failed:', error);
-                setLiffError(error.toString());
+                // แสดงข้อความ error ที่ชัดเจนขึ้น
+                setLiffError(`LIFF Initialization Error: ${error.message || error.toString()}. Please check your LIFF ID and Scopes in LINE Console.`);
             }
         };
         document.body.appendChild(script);
@@ -338,14 +351,24 @@ export default function App() {
       )}
 
       {/* LIFF Error / Login Prompt */}
-      {!userProfile && !isAdminMode && liffReady && (
+      {(!userProfile && !isAdminMode && liffReady) && (
         <div className="bg-blue-50 p-4 mx-4 mt-4 rounded-xl border border-blue-100 flex justify-between items-center">
              <div className="text-sm text-blue-800">
-                {liffError ? `Error: ${liffError}` : 'เข้าสู่ระบบเพื่อสะสมแต้ม'}
+                {liffError ? liffError : 'เข้าสู่ระบบเพื่อสะสมแต้ม'}
              </div>
-             <button onClick={handleLogin} className="bg-blue-600 text-white text-xs px-3 py-1.5 rounded-lg font-bold">
-                Login with LINE
-             </button>
+             {/* ซ่อนปุ่ม Login ถ้ามี Error หรือล็อกอินแล้ว */}
+             {!liffError && (
+                 <button onClick={handleLogin} className="bg-blue-600 text-white text-xs px-3 py-1.5 rounded-lg font-bold">
+                    Login with LINE
+                 </button>
+             )}
+        </div>
+      )}
+      
+      {/* Loading State for LIFF (ตอนที่รอโหลด SDK) */}
+      {!liffReady && (
+        <div className="p-4 mx-4 mt-4 text-center text-gray-500 flex items-center justify-center gap-2">
+          <Loader className="w-5 h-5 animate-spin" /> กำลังโหลดระบบ LIFF...
         </div>
       )}
 
@@ -373,6 +396,10 @@ export default function App() {
                     <h3 className="font-bold text-lg text-white leading-tight">
                         {userProfile ? userProfile.displayName : 'Guest'}
                     </h3>
+                    {/* เพิ่ม Email ตรงนี้เพื่อยืนยันว่าดึงข้อมูลได้ */}
+                    {userProfile?.email && (
+                         <p className="text-xs text-white/80 opacity-90 truncate">Email: {userProfile.email}</p>
+                    )}
                 </div>
               </div>
 
